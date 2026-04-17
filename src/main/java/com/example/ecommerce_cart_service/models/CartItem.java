@@ -14,20 +14,28 @@ import java.math.BigDecimal;
 @Builder
 @Table(
         name = "cart_items",
-        uniqueConstraints = {@UniqueConstraint(columnNames = {"cart_id", "productId"})}
+        indexes = {
+                @Index(name = "idx_cart_item_cart", columnList = "cart_id")
+        },
+        uniqueConstraints = {
+                @UniqueConstraint(columnNames = {"cart_id", "productId"})
+        }
 )
 public class CartItem extends BaseModel {
 
+    @Column(nullable = false)
     private Long productId;
 
+    @Column(nullable = false)
     private String productNameSnapshot;
 
-    @Column(precision = 12, scale = 2)
+    @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal priceSnapshot;
 
+    @Column(nullable = false)
     private Integer quantity;
 
-    @Column(precision = 12, scale = 2)
+    @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal subtotal;
 
     @JsonIgnore

@@ -10,4 +10,5 @@ public interface CartService {
     CartResponseDto updateItemInCart(Long userId, Long productId, UpdateCartItemRequestDto request);
     CartResponseDto removeItemFromCart(Long userId, Long productId);
     CartResponseDto clearCart(Long userId);
+    CartResponseDto checkoutCart(Long userId);
 }
