@@ -1,4 +1,5 @@
 package com.example.ecommerce_cart_service.clients.inventoryClient;
+
 import lombok.*;
 
 @Getter
@@ -6,11 +7,7 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class InventoryResponseDto {
+public class StockAvailabilityResponseDto {
     private Long productId;
-    private Integer totalStock;
-    private Integer reservedStock;
-    private Integer soldStock;
-    private Integer damagedStock;
     private Integer availableStock;
 }

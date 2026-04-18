@@ -2,6 +2,7 @@ package com.example.ecommerce_cart_service.clients.inventoryClient;
 
 import com.example.ecommerce_cart_service.exceptions.ExternalServiceUnavailableException;
 import com.example.ecommerce_cart_service.exceptions.InsufficientStockException;
+import feign.FeignException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.stereotype.Component;
 
@@ -16,9 +17,10 @@ public class InventoryServiceClient {
 
     @CircuitBreaker(name = "inventoryService", fallbackMethod = "fallback")
     public void validateStock(Long productId, Integer quantity) {
-        Boolean inStock = inventoryClient.isInStock(productId, quantity);
-        if (Boolean.FALSE.equals(inStock)) {
-            throw new InsufficientStockException(productId, quantity, 0);
+        int availableStock = inventoryClient.getAvailableStock(productId).getAvailableStock();
+//        Boolean inStock = inventoryClient.isInStock(productId, quantity);
+        if (availableStock < quantity) {
+            throw new InsufficientStockException(productId, quantity, availableStock);
         }
     }
 
@@ -43,6 +45,11 @@ public class InventoryServiceClient {
     }
 
     public void fallback(Long productId, Integer quantity, Exception ex) {
+        if(ex instanceof FeignException.NotFound) {
+            throw new InsufficientStockException(productId, quantity, 0);
+        } else if(ex instanceof InsufficientStockException) {
+            throw new InsufficientStockException(productId, quantity, ((InsufficientStockException) ex).getAvailable());
+        }
         throw new ExternalServiceUnavailableException(
                 "Inventory service unavailable for productId: " + productId,
                 ex

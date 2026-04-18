@@ -2,6 +2,7 @@ package com.example.ecommerce_cart_service.models;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
 import lombok.*;
 
 import java.math.BigDecimal;
@@ -15,7 +16,7 @@ import java.math.BigDecimal;
 @Table(
         name = "cart_items",
         indexes = {
-                @Index(name = "idx_cart_item_cart", columnList = "cart_id")
+                @Index(name = "idx_cart_product", columnList = "cart_id, productId")
         },
         uniqueConstraints = {
                 @UniqueConstraint(columnNames = {"cart_id", "productId"})
@@ -33,6 +34,7 @@ public class CartItem extends BaseModel {
     private BigDecimal priceSnapshot;
 
     @Column(nullable = false)
+    @Min(1)
     private Integer quantity;
 
     @Column(nullable = false, precision = 12, scale = 2)
@@ -40,6 +42,6 @@ public class CartItem extends BaseModel {
 
     @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cart_id")
+    @JoinColumn(name = "cart_id", nullable = false)
     private Cart cart;
 }

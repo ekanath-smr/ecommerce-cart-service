@@ -14,6 +14,7 @@ import com.example.ecommerce_cart_service.models.CartStatus;
 import com.example.ecommerce_cart_service.repositories.CartItemRepository;
 import com.example.ecommerce_cart_service.repositories.CartRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.retry.annotation.Backoff;
@@ -26,11 +27,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 // Implemented inventory reservation workflow using distributed microservices to prevent overselling,
-// including reserve, release, and confirm-sale operations.
+// including reserve, release, and confirm-sale operations while cart checkout (Saga pattern with full compensation coverage).
 
 @Service
-@RequiredArgsConstructor
-@Transactional
 @Slf4j
 public class CartServiceImpl implements CartService {
 
@@ -39,10 +38,23 @@ public class CartServiceImpl implements CartService {
     private final ProductServiceClient productServiceClient;
     private final InventoryServiceClient inventoryServiceClient;
 
+    public CartServiceImpl(CartRepository cartRepository, CartItemRepository cartItemRepository, ProductServiceClient productServiceClient, InventoryServiceClient inventoryServiceClient) {
+        this.cartRepository = cartRepository;
+        this.cartItemRepository = cartItemRepository;
+        this.productServiceClient = productServiceClient;
+        this.inventoryServiceClient = inventoryServiceClient;
+    }
+
     // =========================
     // GET CART
     // =========================
+    @Retryable(
+            retryFor = ObjectOptimisticLockingFailureException.class,
+            maxAttempts = 2,
+            backoff = @Backoff(delay = 100)
+    )
     @Override
+    @Transactional
     public CartResponseDto getCart(Long userId) {
         log.info("Fetching cart for userId={}", userId);
         Cart cart = getOrCreateActiveCart(userId);
@@ -58,6 +70,7 @@ public class CartServiceImpl implements CartService {
             backoff = @Backoff(delay = 100)
     )
     @Override
+    @Transactional
     public CartResponseDto addItemToCart(Long userId, AddToCartRequestDto request) {
         log.info("Adding item to cart for userId={}, productId={}, quantity={}",
                 userId, request.getProductId(), request.getQuantity());
@@ -85,7 +98,16 @@ public class CartServiceImpl implements CartService {
             );
         } else {
             log.info("Creating new cart item for productId={}", productId);
-            inventoryServiceClient.validateStock(productId, request.getQuantity());
+//            try {
+                inventoryServiceClient.validateStock(productId, request.getQuantity());
+//            } catch (Exception ex) {
+//                System.out.println(ex.getMessage());
+//                System.out.println(ex.getCause());
+//                System.out.println(ex.getStackTrace());
+//                throw ex;
+//            }
+
+//            log.info("Stock validated successfully");
             String name = productDto.getTitle();
             BigDecimal price = productDto.getPrice();
             cartItem = CartItem.builder()
@@ -113,6 +135,7 @@ public class CartServiceImpl implements CartService {
             backoff = @Backoff(delay = 100)
     )
     @Override
+    @Transactional
     public CartResponseDto updateItemInCart(Long userId, Long productId, UpdateCartItemRequestDto request) {
         log.info("Updating cart item for userId={}, productId={}, quantity={}",
                 userId, productId, request.getQuantity());
@@ -151,6 +174,7 @@ public class CartServiceImpl implements CartService {
             backoff = @Backoff(delay = 100)
     )
     @Override
+    @Transactional
     public CartResponseDto removeItemFromCart(Long userId, Long productId) {
         log.info("Removing item from cart for userId={}, productId={}", userId, productId);
         Cart cart = getOrCreateActiveCart(userId);
@@ -180,6 +204,7 @@ public class CartServiceImpl implements CartService {
             backoff = @Backoff(delay = 100)
     )
     @Override
+    @Transactional
     public CartResponseDto clearCart(Long userId) {
         log.info("Clearing cart for userId={}", userId);
         Cart cart = getOrCreateActiveCart(userId);
@@ -201,27 +226,30 @@ public class CartServiceImpl implements CartService {
     // Instead, I implemented explicit compensating transactions using the Saga pattern.
     // In production, I would move this to an event-driven model with idempotent operations and retry via messaging systems.”
     @Override
+    @Transactional
     public CartResponseDto checkoutCart(Long userId) {
         log.info("Checkout started for userId={}", userId);
-        Cart cart = getActiveCart(userId);
+        Cart cart = getOrCreateActiveCart(userId);
         validateCartIsActive(cart);
         if (cart.getItems().isEmpty()) {
             log.error("Checkout failed: cart is empty for userId={}", userId);
             throw new InvalidCartOperationException("Cannot checkout empty cart");
         }
+        // (Saga Step)
+        // Reserve stock for ALL items
         List<CartItem> reservedItems = new ArrayList<>();
-        // Reserve stock for ALL items (Saga Step)
         try {
             for (CartItem item : cart.getItems()) {
                 log.info("Reserving stock for productId={}, quantity={}", item.getProductId(), item.getQuantity());
-                inventoryServiceClient.reserveStock(item.getProductId(), item.getQuantity()); reservedItems.add(item);
+                inventoryServiceClient.reserveStock(item.getProductId(), item.getQuantity());
+                reservedItems.add(item);
             }
         } catch (Exception ex) {
             log.error("Stock reservation failed. Rolling back reservations for cartId={}", cart.getId(), ex);
             rollbackReservedStock(reservedItems);
             throw new ExternalServiceUnavailableException("Failed to reserve stock during checkout", ex);
         }
-
+        // confirm sale for All items
         List<CartItem> confirmedItems = new ArrayList<>();
         try {
             for (CartItem item : cart.getItems()) {
@@ -240,7 +268,6 @@ public class CartServiceImpl implements CartService {
         try {
             // Mark cart as checked out
             cart.setStatus(CartStatus.CHECKED_OUT);
-            cart.setIsActive(false);
             cartRepository.save(cart);
         } catch (ObjectOptimisticLockingFailureException ex) {
             // Rollback already confirmed stock (Compensation)
@@ -256,50 +283,40 @@ public class CartServiceImpl implements CartService {
     // INTERNAL HELPER METHODS
     // =========================
 
+    // good for single instance, but for distributed system we need to use distributed locking.
+    // never relay on synchronized locks on distributed systems, always relay on database constraints + retries.
+    // The best approach is to create unique constrain (userId, CartStatus),
+    // but this will restrict user to have only one checkedOut cart, or only one expiredCart, which i don't want.
+    // If we use postgreSql, we can implement Partial Unique index and the problem is solved, but can't do that in mysql.
+    @Synchronized
     private Cart getOrCreateActiveCart(Long userId) {
         return cartRepository
                 .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
                 .orElseGet(() -> {
-                    try {
-                        log.info("Creating new cart for userId={}", userId);
-                        return cartRepository.save(
-                                Cart.builder()
-                                        .userId(userId)
-                                        .status(CartStatus.ACTIVE)
-                                        .totalItems(0)
-                                        .totalPrice(BigDecimal.ZERO)
-                                        .build()
-                        );
-                    } catch (org.springframework.dao.DataIntegrityViolationException ex) {
-                        log.warn("Race condition detected while creating cart for userId={}, fetching existing cart", userId);
-                        return cartRepository
-                                .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
-                                .orElseThrow(() ->
-                                        new RuntimeException("Cart creation failed due to race condition"));
-                    }
+                    log.info("Creating new cart for userId={}", userId);
+                    return cartRepository.save(
+                            Cart.builder()
+                                    .userId(userId)
+                                    .status(CartStatus.ACTIVE)
+                                    .totalItems(0)
+                                    .totalPrice(BigDecimal.ZERO)
+                                    .build()
+                    );
                 });
     }
 
-    private Cart getActiveCart(Long userId) {
-        return cartRepository
-                .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
-                .orElseThrow(() -> new ActiveCartNotFoundException(userId));
-    }
+//    private Cart getActiveCart(Long userId) {
+//        return cartRepository
+//                .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
+//                .orElseThrow(() -> new ActiveCartNotFoundException(userId));
+//    }
 
     private void validateCartIsActive(Cart cart) {
         if (cart.getStatus() == CartStatus.CHECKED_OUT) {
-//            if(cart.getIsActive() == true) {
-//                cart.setIsActive(false);
-//                cartRepository.save(cart);
-//            }
             log.error("Attempt to modify CHECKED_OUT cartId={}", cart.getId());
             throw new CartAlreadyCheckedOutException(cart.getId());
         }
         if (cart.getStatus() == CartStatus.EXPIRED) {
-//            if(cart.getIsActive() == true) {
-//                cart.setIsActive(false);
-//                cartRepository.save(cart);
-//            }
             log.error("Attempt to modify EXPIRED cartId={}", cart.getId());
             throw new InvalidCartOperationException("Cannot modify expired cart");
         }
