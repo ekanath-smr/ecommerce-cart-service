@@ -1,4 +1,4 @@
-package com.example.ecommerce_cart_service.clients.inventoryClient;
+package com.example.ecommerce_cart_service.clients.inventoryClient.dtos;
 import lombok.*;
 
 @Getter

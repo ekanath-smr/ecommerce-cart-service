@@ -2,6 +2,7 @@ package com.example.ecommerce_cart_service.models;
 
 import jakarta.persistence.*;
 import lombok.*;
+import lombok.experimental.SuperBuilder;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -12,12 +13,15 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
-@Builder
+@SuperBuilder
 @Table(
         name = "carts",
         indexes = {
                 @Index(name = "idx_cart_user_status", columnList = "userId, status")
         }
+//        uniqueConstraints = {
+//                @UniqueConstraint(columnNames = {"user_id", "status"})
+//        }
 )
 public class Cart extends BaseModel{
 

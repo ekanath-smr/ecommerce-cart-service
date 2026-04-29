@@ -5,7 +5,6 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.jspecify.annotations.NonNull;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -27,8 +26,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected void doFilterInternal(
-            HttpServletRequest request, @NonNull HttpServletResponse response,
-            @NonNull FilterChain filterChain) throws ServletException, IOException {
+            HttpServletRequest request, HttpServletResponse response,
+            FilterChain filterChain) throws ServletException, IOException {
 
 //        log.info("JWT Filter hit for path: {}", request.getRequestURI());
 
@@ -53,8 +52,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                         .stream()
                         .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                         .toList();
-                log.info("Authenticated user: {}", username);
-                log.info("Authorities: {}", authorities);
+//                log.info("Authenticated user: {}", username);
+//                log.info("Authorities: {}", authorities);
                 UserPrincipal userPrincipal = new UserPrincipal(userId, username);
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(

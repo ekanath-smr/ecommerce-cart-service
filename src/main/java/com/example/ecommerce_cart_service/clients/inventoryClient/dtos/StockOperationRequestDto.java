@@ -1,9 +1,13 @@
-package com.example.ecommerce_cart_service.clients.inventoryClient;
+package com.example.ecommerce_cart_service.clients.inventoryClient.dtos;
 
 import jakarta.validation.constraints.Positive;
-import lombok.Data;
+import lombok.*;
 
-@Data
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class StockOperationRequestDto {
     @Positive
     private Integer quantity;

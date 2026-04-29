@@ -15,4 +15,12 @@ public class InsufficientStockException extends RuntimeException {
         this.available = available;
         this.message = "Insufficient stock for productId: " + productId + ". Requested: " + requested + ", Available: " + available;
     }
+
+    public InsufficientStockException(String message) {
+        super(message);
+        this.productId = null;
+        this.requested = null;
+        this.available = null;
+        this.message = message;
+    }
 }

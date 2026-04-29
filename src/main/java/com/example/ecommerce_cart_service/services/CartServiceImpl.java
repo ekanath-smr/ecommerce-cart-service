@@ -1,7 +1,12 @@
 package com.example.ecommerce_cart_service.services;
 
 import com.example.ecommerce_cart_service.clients.inventoryClient.InventoryServiceClient;
-import com.example.ecommerce_cart_service.clients.productClient.ProductDto;
+import com.example.ecommerce_cart_service.clients.inventoryClient.dtos.ValidateStockResponseDto;
+import com.example.ecommerce_cart_service.clients.orderClient.OrderServiceClient;
+import com.example.ecommerce_cart_service.clients.orderClient.dtos.CreateOrderRequestDto;
+import com.example.ecommerce_cart_service.clients.orderClient.dtos.OrderItemRequestDto;
+import com.example.ecommerce_cart_service.clients.orderClient.dtos.OrderResponseDto;
+import com.example.ecommerce_cart_service.clients.productClient.dtos.ProductDto;
 import com.example.ecommerce_cart_service.clients.productClient.ProductServiceClient;
 import com.example.ecommerce_cart_service.dtos.request.AddToCartRequestDto;
 import com.example.ecommerce_cart_service.dtos.request.UpdateCartItemRequestDto;
@@ -13,8 +18,6 @@ import com.example.ecommerce_cart_service.models.CartItem;
 import com.example.ecommerce_cart_service.models.CartStatus;
 import com.example.ecommerce_cart_service.repositories.CartItemRepository;
 import com.example.ecommerce_cart_service.repositories.CartRepository;
-import lombok.RequiredArgsConstructor;
-import lombok.Synchronized;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.retry.annotation.Backoff;
@@ -23,11 +26,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.List;
-
-// Implemented inventory reservation workflow using distributed microservices to prevent overselling,
-// including reserve, release, and confirm-sale operations while cart checkout (Saga pattern with full compensation coverage).
 
 @Service
 @Slf4j
@@ -37,22 +35,20 @@ public class CartServiceImpl implements CartService {
     private final CartItemRepository cartItemRepository;
     private final ProductServiceClient productServiceClient;
     private final InventoryServiceClient inventoryServiceClient;
+    private final OrderServiceClient orderServiceClient;
 
-    public CartServiceImpl(CartRepository cartRepository, CartItemRepository cartItemRepository, ProductServiceClient productServiceClient, InventoryServiceClient inventoryServiceClient) {
+    public CartServiceImpl(CartRepository cartRepository, CartItemRepository cartItemRepository, ProductServiceClient productServiceClient,
+                           InventoryServiceClient inventoryServiceClient, OrderServiceClient orderServiceClient) {
         this.cartRepository = cartRepository;
         this.cartItemRepository = cartItemRepository;
         this.productServiceClient = productServiceClient;
         this.inventoryServiceClient = inventoryServiceClient;
+        this.orderServiceClient = orderServiceClient;
     }
 
     // =========================
     // GET CART
     // =========================
-    @Retryable(
-            retryFor = ObjectOptimisticLockingFailureException.class,
-            maxAttempts = 2,
-            backoff = @Backoff(delay = 100)
-    )
     @Override
     @Transactional
     public CartResponseDto getCart(Long userId) {
@@ -90,7 +86,7 @@ public class CartServiceImpl implements CartService {
         if (cartItem != null) {
             int newQuantity = cartItem.getQuantity() + request.getQuantity();
             log.info("Updating existing cart item. productId={}, newQuantity={}", productId, newQuantity);
-            inventoryServiceClient.validateStock(productId, newQuantity);
+            validateStock(productId, newQuantity);
             cartItem.setQuantity(newQuantity);
             cartItem.setSubtotal(
                     cartItem.getPriceSnapshot()
@@ -98,16 +94,7 @@ public class CartServiceImpl implements CartService {
             );
         } else {
             log.info("Creating new cart item for productId={}", productId);
-//            try {
-                inventoryServiceClient.validateStock(productId, request.getQuantity());
-//            } catch (Exception ex) {
-//                System.out.println(ex.getMessage());
-//                System.out.println(ex.getCause());
-//                System.out.println(ex.getStackTrace());
-//                throw ex;
-//            }
-
-//            log.info("Stock validated successfully");
+            validateStock(productId, request.getQuantity());
             String name = productDto.getTitle();
             BigDecimal price = productDto.getPrice();
             cartItem = CartItem.builder()
@@ -152,7 +139,7 @@ public class CartServiceImpl implements CartService {
             cart.getItems().remove(cartItem);
             cartItemRepository.delete(cartItem);
         } else {
-            inventoryServiceClient.validateStock(productId, request.getQuantity());
+            validateStock(productId, request.getQuantity());
             cartItem.setQuantity(request.getQuantity());
             cartItem.setSubtotal(
                     cartItem.getPriceSnapshot()
@@ -216,7 +203,6 @@ public class CartServiceImpl implements CartService {
         return CartMapper.mapToCartResponse(cart);
     }
 
-
     // =========================
     // CHECKOUT CART
     // =========================
@@ -235,47 +221,39 @@ public class CartServiceImpl implements CartService {
             log.error("Checkout failed: cart is empty for userId={}", userId);
             throw new InvalidCartOperationException("Cannot checkout empty cart");
         }
-        // (Saga Step)
-        // Reserve stock for ALL items
-        List<CartItem> reservedItems = new ArrayList<>();
+        CreateOrderRequestDto orderRequest = CreateOrderRequestDto.builder()
+                .userId(userId)
+                .items(
+                        cart.getItems()
+                                .stream()
+                                .map(item -> new OrderItemRequestDto(item.getProductId(), item.getQuantity()))
+                                .toList()
+                )
+                .build();
+
+        String idempotencyKey = "cart-" + cart.getId() + "-v" + cart.getVersion();
+
+        OrderResponseDto orderResponse;
         try {
-            for (CartItem item : cart.getItems()) {
-                log.info("Reserving stock for productId={}, quantity={}", item.getProductId(), item.getQuantity());
-                inventoryServiceClient.reserveStock(item.getProductId(), item.getQuantity());
-                reservedItems.add(item);
-            }
+            orderResponse = orderServiceClient.createOrder(orderRequest, idempotencyKey);
         } catch (Exception ex) {
-            log.error("Stock reservation failed. Rolling back reservations for cartId={}", cart.getId(), ex);
-            rollbackReservedStock(reservedItems);
-            throw new ExternalServiceUnavailableException("Failed to reserve stock during checkout", ex);
-        }
-        // confirm sale for All items
-        List<CartItem> confirmedItems = new ArrayList<>();
-        try {
-            for (CartItem item : cart.getItems()) {
-                inventoryServiceClient.confirmSale(item.getProductId(), item.getQuantity());
-                confirmedItems.add(item);
+            log.error("Checkout failed while creating order for cartId={}", cart.getId(), ex);
+            if(ex instanceof InsufficientStockException) {
+                throw ex;
             }
-        } catch (Exception ex) {
-            log.error("Confirm sale failed. Rolling back confirmed sales for cartId={}", cart.getId(), ex);
-            rollbackSoldStock(confirmedItems);
-            List<CartItem> unconfirmedItems = new ArrayList<>(reservedItems);
-            unconfirmedItems.removeAll(confirmedItems);
-            rollbackReservedStock(unconfirmedItems);
-            throw new ExternalServiceUnavailableException("Failed during confirm sale", ex);
+            throw new ExternalServiceUnavailableException(
+                    "Order service unavailable for idempotencyKey: " + idempotencyKey,
+                    ex
+            );
         }
 
-        try {
-            // Mark cart as checked out
-            cart.setStatus(CartStatus.CHECKED_OUT);
-            cartRepository.save(cart);
-        } catch (ObjectOptimisticLockingFailureException ex) {
-            // Rollback already confirmed stock (Compensation)
-            rollbackSoldStock(confirmedItems);
-            throw new ConcurrentCartUpdateException();
-        }
+        cart.getItems().clear();
+        cart.setTotalItems(0);
+        cart.setTotalPrice(BigDecimal.ZERO);
+        cartRepository.save(cart);
 
-        log.info("Checkout successful for userId={}, cartId={}", userId, cart.getId());
+        log.info("Checkout successful for userId={}, cartId={}, orderId={}",
+                userId, cart.getId(), orderResponse.getOrderId());
         return CartMapper.mapToCartResponse(cart);
     }
 
@@ -283,12 +261,11 @@ public class CartServiceImpl implements CartService {
     // INTERNAL HELPER METHODS
     // =========================
 
-    // good for single instance, but for distributed system we need to use distributed locking.
+    // @Synchronized is good for single instance, but for distributed system we need to use distributed locking.
     // never relay on synchronized locks on distributed systems, always relay on database constraints + retries.
     // The best approach is to create unique constrain (userId, CartStatus),
     // but this will restrict user to have only one checkedOut cart, or only one expiredCart, which i don't want.
-    // If we use postgreSql, we can implement Partial Unique index and the problem is solved, but can't do that in mysql.
-    @Synchronized
+    // If we use postgreSql, we can implement Partial Unique index and the problem is solved, but can't do that in mysql (limitation).
     private Cart getOrCreateActiveCart(Long userId) {
         return cartRepository
                 .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
@@ -305,11 +282,11 @@ public class CartServiceImpl implements CartService {
                 });
     }
 
-//    private Cart getActiveCart(Long userId) {
-//        return cartRepository
-//                .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
-//                .orElseThrow(() -> new ActiveCartNotFoundException(userId));
-//    }
+    private Cart getActiveCart(Long userId) {
+        return cartRepository
+                .findByUserIdAndStatus(userId, CartStatus.ACTIVE)
+                .orElseThrow(() -> new ActiveCartNotFoundException(userId));
+    }
 
     private void validateCartIsActive(Cart cart) {
         if (cart.getStatus() == CartStatus.CHECKED_OUT) {
@@ -333,30 +310,13 @@ public class CartServiceImpl implements CartService {
         cart.setTotalPrice(totalPrice);
     }
 
-    private void rollbackReservedStock(List<CartItem> reservedItems) {
-        for (CartItem item : reservedItems) {
-            try {
-                inventoryServiceClient.releaseStock(item.getProductId(), item.getQuantity());
-            } catch (Exception rollbackEx) {
-                log.error("CRITICAL: Failed to rollback reservation for productId={}", item.getProductId(), rollbackEx);
-            }
+    private void validateStock(Long productId, Integer newQuantity) {
+        ValidateStockResponseDto validateStockResponseDto;
+        validateStockResponseDto = inventoryServiceClient.validateStock(productId, newQuantity);
+        if(!validateStockResponseDto.getIsStockAvailable()) {
+            throw new InsufficientStockException(validateStockResponseDto.getProductId(),
+                    validateStockResponseDto.getRequestedQuantity(), validateStockResponseDto.getAvailableQuantity());
         }
     }
-
-    private void rollbackSoldStock(List<CartItem> confirmedItems) {
-        for (CartItem item : confirmedItems) {
-            try {
-                inventoryServiceClient.undoConfirmedSale(item.getProductId(), item.getQuantity());
-            } catch (Exception rollbackEx) {
-                log.error("CRITICAL: Failed to rollback confirmed sale for productId={}", item.getProductId(), rollbackEx);
-            }
-        }
-    }
-
-//    @Recover
-//    public CartResponseDto recover(ObjectOptimisticLockingFailureException ex, Long userId, AddToCartRequestDto request) {
-//        log.error("Cart update failed after retries for userId={}", userId, ex);
-//        throw new ConcurrentCartUpdateException();
-//    }
 
 }

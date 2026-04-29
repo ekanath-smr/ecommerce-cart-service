@@ -1,4 +1,4 @@
-package com.example.ecommerce_cart_service.clients.productClient;
+package com.example.ecommerce_cart_service.clients.productClient.dtos;
 
 import lombok.Data;
 
