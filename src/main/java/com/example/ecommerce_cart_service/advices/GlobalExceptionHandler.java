@@ -7,6 +7,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -112,6 +114,32 @@ public class GlobalExceptionHandler {
                 ex.getMessage()
         );
     }
+
+    // =========================
+    // Security Exception
+    // =========================
+
+    @ExceptionHandler(AuthorizationDeniedException.class)
+    public ResponseEntity<ErrorResponseDto> handleAuthDenied(
+            AuthorizationDeniedException ex, HttpServletRequest request) {
+        log.warn("Authorization denied at {} - {}", request.getRequestURI(), ex.getMessage());
+        return buildResponse(
+                HttpStatus.FORBIDDEN,
+                "Forbidden",
+                "You do not have permission to access this resource."
+        );
+    }
+
+//    @ExceptionHandler(AccessDeniedException.class)
+//    public ResponseEntity<ErrorResponseDto> handleAccessDenied(
+//            AccessDeniedException ex, HttpServletRequest request) {
+//        log.warn("Access denied at {} - {}", request.getRequestURI(), ex.getMessage());
+//        return buildResponse(
+//                HttpStatus.FORBIDDEN,
+//                "Forbidden",
+//                "Access denied"
+//        );
+//    }
 
     // =========================
     // Generic fallback

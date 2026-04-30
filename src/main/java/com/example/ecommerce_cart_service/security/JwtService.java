@@ -56,6 +56,11 @@ public class JwtService {
         }
     }
 
+    public String extractTokenType(String token) {
+        Object tokenType = extractAllClaims(token).get("tokenType");
+        return tokenType != null ? tokenType.toString() : "";
+    }
+
     private Claims extractAllClaims(String token) {
         return Jwts
                 .parserBuilder()

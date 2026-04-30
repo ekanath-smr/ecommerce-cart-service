@@ -30,9 +30,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             FilterChain filterChain) throws ServletException, IOException {
 
 //        log.info("JWT Filter hit for path: {}", request.getRequestURI());
-
+        String path = request.getRequestURI();
+        String method = request.getMethod();
         String authHeader = request.getHeader("Authorization");
-
 //        log.info("Authorization header received: {}", authHeader);
 
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
@@ -45,7 +45,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             if (jwtService.validateToken(token)
                     && SecurityContextHolder.getContext().getAuthentication() == null) {
-
+                String tokenType = jwtService.extractTokenType(token);
+                if (!"ACCESS".equals(tokenType)) {
+                    log.warn("Invalid token type | method={} | path={}", method, path);
+                    filterChain.doFilter(request, response);
+                    return;
+                }
                 String username = jwtService.extractUsername(token);
                 Long userId = jwtService.extractUserId(token);
                 List<SimpleGrantedAuthority> authorities = jwtService.extractRoles(token)

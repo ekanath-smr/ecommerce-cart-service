@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 @Service
 @Slf4j
@@ -80,10 +81,16 @@ public class CartServiceImpl implements CartService {
             throw new ProductNotFoundException(productId);
         }
 
-        CartItem cartItem = cartItemRepository
-                .findByCartIdAndProductId(cart.getId(), productId)
-                .orElse(null);
-        if (cartItem != null) {
+//        CartItem cartItem = cartItemRepository
+//                .findByCartIdAndProductId(cart.getId(), productId)
+//                .orElse(null);
+        Optional<CartItem> cartItemOptional = cart.getItems()
+                .stream()
+                .filter(i -> i.getProductId().equals(productId))
+                .findFirst();
+        CartItem cartItem;
+        if (cartItemOptional.isPresent()) {
+            cartItem = cartItemOptional.get();
             int newQuantity = cartItem.getQuantity() + request.getQuantity();
             log.info("Updating existing cart item. productId={}, newQuantity={}", productId, newQuantity);
             validateStock(productId, newQuantity);
@@ -108,7 +115,7 @@ public class CartServiceImpl implements CartService {
             cart.getItems().add(cartItem);
         }
         recalculateCart(cart);
-        cartRepository.save(cart);
+//        cartRepository.save(cart);
         log.info("Cart updated successfully for userId={}", userId);
         return CartMapper.mapToCartResponse(cart);
     }
