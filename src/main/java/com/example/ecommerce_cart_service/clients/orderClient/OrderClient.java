@@ -9,8 +9,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 
 @FeignClient(
-        name = "order-service",
-        url = "${order.service.url}",
+        name = "ECOMMERCE-ORDER-SERVICE",
+        url = "${order.service.url:}",
         configuration = FeignConfig.class
 )
 public interface OrderClient {

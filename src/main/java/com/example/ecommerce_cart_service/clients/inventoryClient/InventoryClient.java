@@ -8,8 +8,8 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.*;
 
 @FeignClient(
-        name = "inventory-service",
-        url = "${inventory.service.url}",
+        name = "ECOMMERCE-INVENTORY-SERVICE",
+        url = "${inventory.service.url:}",
         configuration = FeignConfig.class
 )
 public interface InventoryClient {
